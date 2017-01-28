@@ -1,0 +1,14 @@
+*.swp
+
+*.swap
+
+
+
+lib/
+
+bin/
+
+doc/html/
+
+build/
+release/
