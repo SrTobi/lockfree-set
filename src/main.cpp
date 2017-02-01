@@ -47,7 +47,7 @@ class mutex_set
 {
 private:
 	struct node;
-	typedef typename Allocator<node> allocator_type;
+	typedef Allocator<node> allocator_type;
 	typedef typename allocator_type::ptr ptr;
 	using shared_lock = typename std::conditional<supports_shared_mutex, std::shared_lock<Mutex>, std::unique_lock<Mutex>>::type;
 
@@ -132,7 +132,7 @@ class lockfree_set
 {
 private:
 	struct node;
-	typedef typename Allocator<node> allocator_type;
+	typedef Allocator<node> allocator_type;
 	using tag_type = uint32_t;
 
 	struct mark_ptr_tag
@@ -154,9 +154,9 @@ private:
 			return !(*this == rhs);
 		}
 
-		bool mark = false;
 		node* ptr = nullptr;
 		tag_type tag = 0;
+		bool mark = false;
 	};
 
 	struct node
@@ -217,7 +217,7 @@ private:
 		bool cur_marked()
 		{
 			assert(key_match);
-			return prev_mnt_value.mark;
+			return next_mnt_value.mark;
 		}
 	};
 public:
@@ -258,7 +258,7 @@ public:
 			node* next = r.next();
 			{
 				mark_ptr_tag expected = { false, next, r.cur_tag() };
-				mark_ptr_tag desired = { true, next, r.cur_tag() };
+				mark_ptr_tag desired = { true, next, r.cur_tag() + 1 };
 				if (!std::atomic_compare_exchange_strong(&cur.mark_next_tag, &expected, desired))
 					continue;
 			}
