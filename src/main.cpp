@@ -1,3 +1,4 @@
+#define _ENABLE_ATOMIC_ALIGNMENT_FIX
 #include <shared_mutex>
 #include <mutex>
 #include <thread>
