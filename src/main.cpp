@@ -339,11 +339,205 @@ private:
 
 
 
+enum class Op
+{
+	Insert,
+	Delete,
+	Search
+};
+
+
+struct bench_statistic
+{
+	bench_statistic() = default;
+	bench_statistic(const bench_statistic&) = default;
+	bench_statistic(std::size_t i_s, std::size_t i_f, std::size_t d_s, std::size_t d_f, std::size_t s_s, std::size_t s_f)
+		: insert_succ(i_s)
+		, insert_fail(i_f)
+		, delete_succ(d_s)
+		, delete_fail(d_f)
+		, search_succ(s_s)
+		, search_fail(s_f)
+	{}
+	std::size_t insert_succ = 0;
+	std::size_t insert_fail = 0;
+	std::size_t delete_succ = 0;
+	std::size_t delete_fail = 0;
+	std::size_t search_succ = 0;
+	std::size_t search_fail = 0;
+};
+
+struct bench_result: bench_statistic
+{
+	bench_result() = default;
+	bench_result(const bench_statistic& stats, std::size_t threads, std::chrono::nanoseconds ns, std::size_t ops)
+		: bench_statistic(stats)
+		, num_threads(threads)
+		, time_needed(ns)
+		, operations(ops)
+	{}
+
+	std::size_t operations = 0;
+	std::size_t num_threads = 0;
+	std::chrono::nanoseconds time_needed;
+};
+
+class benchmark
+{
+public:
+	benchmark(int times, int threads, int range, int inserts, int deletions, int searches)
+		: mTimes(times)
+		, mThreads(threads)
+		, mInsertSupplier(threads)
+		, mDeleteSupplier(threads)
+		, mHasSupplier(threads)
+		, mOpSupplier(threads)
+	{
+		assert(mTimes >= 3);
+		for (int t = 0; t < threads; ++t)
+		{
+			auto& insert_vec = mInsertSupplier[t];
+			auto& delete_vec = mDeleteSupplier[t];
+			auto& search_vec = mHasSupplier[t];
+			auto& op_vec = mOpSupplier[t];
+
+			auto fill = [range](std::vector<int>& target, int num)
+			{
+				for (int i = 0; i < num; ++i)
+					target.emplace_back(i % range);
+
+				std::default_random_engine rd{ 10 };
+				std::mt19937 g(rd());
+
+				std::shuffle(target.begin(), target.end(), g);
+			};
+
+			fill(insert_vec, inserts);
+			fill(delete_vec, deletions);
+			fill(search_vec, searches);
+
+			{
+				op_vec.insert(op_vec.end(), inserts, Op::Insert);
+				op_vec.insert(op_vec.end(), deletions, Op::Delete);
+				op_vec.insert(op_vec.end(), searches, Op::Search);
+
+				std::default_random_engine rd{ 10 };
+				std::mt19937 g(rd());
+
+				std::shuffle(op_vec.begin(), op_vec.end(), g);
+
+				mOperations = op_vec.size();
+			}
+		}
+	}
+
+
+	template<typename SetImpl>
+	bench_result run()
+	{
+		std::vector<bench_result> results{};
+		for (int time = 0; time < mTimes; ++time)
+		{
+			SetImpl theSet{};
+			std::atomic<bool> start = false;
+			std::vector<std::thread> threads;
+			std::vector<bench_statistic> stats{ unsigned(mThreads) , bench_statistic{} };
+
+			for (int thread = 0; thread < mThreads; ++thread)
+			{
+				threads.emplace_back([&start, &stat = stats[thread], thread, &theSet, this]()
+				{
+					auto& insert_vec = mInsertSupplier[thread];
+					auto& delete_vec = mDeleteSupplier[thread];
+					auto& search_vec = mHasSupplier[thread];
+					auto& op_vec = mOpSupplier[thread];
+
+					while (!start.load())
+					{
+						// warmup
+					}
+
+					auto insert_it = insert_vec.cbegin();
+					auto delete_it = delete_vec.cbegin();
+					auto search_it = search_vec.cbegin();
+
+					for (auto op : op_vec)
+					{
+						switch (op)
+						{
+						case Op::Insert:
+							{
+								bool succ = theSet.insert(*(insert_it++));
+								++(succ ? stat.insert_succ : stat.insert_fail);
+							}break;
+						case Op::Delete:
+							{
+								bool succ = theSet.remove(*(delete_it++));
+								++(succ ? stat.delete_succ : stat.delete_fail);
+							}break;
+						case Op::Search:
+							{
+								bool succ = theSet.has(*(search_it++));
+								++(succ ? stat.search_succ : stat.search_fail);
+							}break;
+						}
+					}
+				});
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			start = true;
+			auto start_time = std::chrono::high_resolution_clock::now();
+			
+
+			for (auto& t : threads)
+				t.join();
+			auto end_time = std::chrono::high_resolution_clock::now();
+
+			bench_statistic combined = std::accumulate(stats.begin(), stats.end(), bench_statistic{}, 
+				[](const bench_statistic& lhs, const bench_statistic& rhs)
+				{
+					const bench_statistic s = {
+						lhs.insert_succ + rhs.insert_succ,
+						lhs.insert_fail + rhs.insert_fail,
+						lhs.delete_succ + rhs.delete_succ,
+						lhs.delete_fail + rhs.delete_fail,
+						lhs.search_succ + rhs.search_succ,
+						lhs.search_fail + rhs.search_fail
+					};
+					return s;
+				});
+			results.emplace_back(combined, mThreads, std::chrono::nanoseconds{end_time - start_time}, mOperations);
+		}
+		
+		bench_result end_res = results.front();
+		std::vector<std::chrono::nanoseconds> time_result{ results.size(), std::chrono::nanoseconds(0) };
+		std::transform(results.cbegin(), results.cend(), time_result.begin(), [](const bench_result res) { return res.time_needed; });
+		std::sort(time_result.begin(), time_result.end());
+		time_result.erase(time_result.begin());
+		time_result.pop_back();
+		end_res.time_needed = std::accumulate(time_result.cbegin(), time_result.cend(), std::chrono::nanoseconds(0), [](const std::chrono::nanoseconds& lhs, const std::chrono::nanoseconds& rhs){ return lhs + rhs; }) / time_result.size();
+		return end_res;
+	}
+
+
+private:
+	const int mTimes;
+	const int mThreads;
+	std::size_t mOperations;
+	std::vector<std::vector<int>> mInsertSupplier;
+	std::vector<std::vector<int>> mDeleteSupplier;
+	std::vector<std::vector<int>> mHasSupplier;
+	std::vector<std::vector<Op>> mOpSupplier;
+	
+};
+
+
 
 
 
 //mutex_set<int, std::shared_mutex, true> TheSet;
-lockfree_set<int> TheSet;
+/*lockfree_set<int> TheSet;
 
 void run()
 {
@@ -358,107 +552,55 @@ void run()
 			TheSet.remove(e);
 	}
 }
-
+*/
 
 
 
 int main()
 {
-	/*using namespace std;
-	clock_t begin = clock();
 
-	vector<thread> threads;
-
-	for (int i = 0; i < 8; ++i)
+	for (int threads = 1; threads <= 32; ++threads)
 	{
-		run();
-		//threads.emplace_back(std::thread(&run));
+		for (int r = 1; r <= 5; ++r)
+		{
+			int range = 1000 << r;
+			for (int nf = 1; nf <= 5; ++nf)
+			{
+				int num = 10000 << nf;
+				benchmark b{ 10, threads, range, num, num, num };
+
+				auto print = [threads, range, num](const std::string& name, const bench_result& res)
+				{
+					std::cout << name << ", " << threads << ", " << range << ", " << num << ", " << res.operations << ", "
+						<< res.insert_succ << ", " << res.insert_fail << ", "
+						<< res.delete_succ << ", " << res.delete_fail << ", "
+						<< res.search_succ << ", " << res.search_fail << ", "
+						<< res.time_needed.count() << std::endl;
+				};
+
+				if(threads == 1)
+				{
+					auto res = b.run<mutex_set<int, no_mutex, false>>();
+					print("seq", res);
+				}
+
+				{
+					auto res = b.run<mutex_set<int, std::mutex, false>>();
+					print("mutex", res);
+				}
+
+				{
+					auto res = b.run<mutex_set<int, std::shared_mutex, true>>();
+					print("rw-mutex", res);
+				}
+
+				{
+					auto res = b.run<lockfree_set<int>>();
+					print("lockfree", res);
+				}
+			}
+		}
 	}
-
-	for (thread& t : threads)
-	{
-		t.join();
-	}
-
-	clock_t end = clock();
-	double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
-
-	std::cout << elapsed_secs << std::endl;*/
-
-	lockfree_set<int> set;
-
-	set.insert(3);
-	set.insert(5);
-	set.insert(7);
-	
-#define OUT(n) std::cout << std::boolalpha << "has(" << n << "): " << set.has(n) << std::endl;
-
-	OUT(2);
-	OUT(3);
-	OUT(4);
-	OUT(5);
-	OUT(6);
-	OUT(7);
-	OUT(8);
-
-	std::cout << "===== Without: 5 ======\n";
-	set.remove(5);
-
-	OUT(2);
-	OUT(3);
-	OUT(4);
-	OUT(5);
-	OUT(6);
-	OUT(7);
-	OUT(8);
-
-
-	std::cout << "===== Without: 4 ======\n";
-	set.remove(4);
-
-	OUT(2);
-	OUT(3);
-	OUT(4);
-	OUT(5);
-	OUT(6);
-	OUT(7);
-	OUT(8);
-
-
-	std::cout << "===== Without: 3 ======\n";
-	set.remove(3);
-
-	OUT(2);
-	OUT(3);
-	OUT(4);
-	OUT(5);
-	OUT(6);
-	OUT(7);
-	OUT(8);
-
-
-	std::cout << "===== Without: 6 ======\n";
-	set.remove(6);
-
-	OUT(2);
-	OUT(3);
-	OUT(4);
-	OUT(5);
-	OUT(6);
-	OUT(7);
-	OUT(8);
-
-
-	std::cout << "===== Without: 7 ======\n";
-	set.remove(7);
-
-	OUT(2);
-	OUT(3);
-	OUT(4);
-	OUT(5);
-	OUT(6);
-	OUT(7);
-	OUT(8);//*/
 
 	std::cin.get();
 	return 0;
