@@ -7,6 +7,10 @@
 #include <iostream>
 #include <atomic>
 #include <cassert>
+#include <random>
+#include <numeric>
+#include <string>
+#include <algorithm>
 
 
 template<typename T>
@@ -134,7 +138,7 @@ class lockfree_set
 private:
 	struct node;
 	typedef Allocator<node> allocator_type;
-	using tag_type = uint32_t;
+	using tag_type = uint16_t;
 
 	struct mark_ptr_tag
 	{
@@ -224,8 +228,6 @@ private:
 public:
 	lockfree_set()
 	{
-		std::atomic<mark_ptr_tag> a;
-		std::cout << std::boolalpha << "Lockfree: " << a.is_lock_free() << " size: " << sizeof(mark_ptr_tag) << std::endl;
 	}
 
 	bool insert(const E& e)
@@ -241,7 +243,7 @@ public:
 			mark_ptr_tag new_mnt = { false, r.greater_ptr(), 0 };
 			new_node->mark_next_tag.store(new_mnt);
 			mark_ptr_tag expected = { false, r.greater_ptr(), r.lesser_tag() };
-			mark_ptr_tag desired = { false, new_node, r.lesser_tag() + 1 };
+			mark_ptr_tag desired = { false, new_node, tag_type(r.lesser_tag() + 1) };
 			if (std::atomic_compare_exchange_strong(r.prev_mnt_addr, &expected, desired))
 				return true;
 		}
@@ -259,13 +261,13 @@ public:
 			node* next = r.next();
 			{
 				mark_ptr_tag expected = { false, next, r.cur_tag() };
-				mark_ptr_tag desired = { true, next, r.cur_tag() + 1 };
+				mark_ptr_tag desired = { true, next, tag_type(r.cur_tag() + 1) };
 				if (!std::atomic_compare_exchange_strong(&cur.mark_next_tag, &expected, desired))
 					continue;
 			}
 			{
 				mark_ptr_tag expected = { false, &cur, r.prev_tag() };
-				mark_ptr_tag desired = { false, next, r.prev_tag() + 1};
+				mark_ptr_tag desired = { false, next, tag_type(r.prev_tag() +  1) };
 				if (std::atomic_compare_exchange_strong(r.prev_mnt_addr, &expected, desired))
 					mAllocator.deallocate_raw(&cur);
 				else
@@ -316,7 +318,7 @@ private:
 			}
 			else {
 				mark_ptr_tag expected = { false, r.cur(), r.prev_tag() };
-				mark_ptr_tag desired = { false, r.next(), r.prev_tag() + 1 };
+				mark_ptr_tag desired = { false, r.next(), tag_type(r.prev_tag() + 1) };
 				if (std::atomic_compare_exchange_strong(r.prev_mnt_addr, &expected, desired))
 				{
 					mAllocator.deallocate_raw(r.cur());
